@@ -1,0 +1,758 @@
+openapi: 3.0.3
+info:
+  title: AI Pixel Studio API
+  version: 0.2.0
+  license:
+    name: ISC
+    url: https://opensource.org/license/isc-license-txt
+  description: |
+    Swagger/OpenAPI contract for the AI Pixel Studio HTTP API.
+
+    Public clients call the API Gateway on `/v1/*` with a Google ID token.
+    The gateway verifies the token, rewrites `/v1` to `/api`, adds internal
+    identity headers, and proxies the request to the owning service.
+
+    Run the API gateway and open `/docs` for Swagger UI, or fetch
+    `/openapi.yaml` for this raw contract.
+servers:
+  - url: /
+    description: Same-origin API gateway
+security:
+  - GoogleIdToken: []
+tags:
+  - name: System
+    description: Public gateway readiness and Swagger metadata.
+  - name: Designs
+    description: Authenticated design CRUD and free-tier quota behavior.
+  - name: Media
+    description: Authenticated image upload, media listing, and AI image generation.
+  - name: Subscription
+    description: Authenticated premium entitlement and PayPal checkout flow.
+paths:
+  /health:
+    get:
+      tags: [System]
+      operationId: getGatewayHealth
+      summary: Check API gateway readiness
+      description: Returns gateway process readiness. Downstream service health routes exist on their own ports.
+      security: []
+      responses:
+        "200":
+          description: Gateway is ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+              examples:
+                gateway:
+                  value:
+                    service: api-gateway
+                    status: ready
+  /openapi.yaml:
+    get:
+      tags: [System]
+      operationId: getOpenApiYaml
+      summary: Fetch the raw OpenAPI document
+      security: []
+      responses:
+        "200":
+          description: OpenAPI YAML document
+          content:
+            application/yaml:
+              schema:
+                type: string
+  /v1/designs:
+    get:
+      tags: [Designs]
+      operationId: listDesigns
+      summary: List current user's designs
+      description: Finds designs by authenticated `userId` and sorts by `updatedAt` descending.
+      responses:
+        "200":
+          description: User designs sorted by most recent update
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DesignListResponse"
+        "401":
+          $ref: "#/components/responses/GatewayUnauthorized"
+        "500":
+          $ref: "#/components/responses/ServiceError"
+    post:
+      tags: [Designs]
+      operationId: saveDesign
+      summary: Create or update a design
+      description: |
+        Creates a design when `designId` is omitted or `null`; updates an existing
+        owned design when `designId` is present.
+
+        Free users are limited by `FREE_DESIGN_LIMIT` on create. Premium status is
+        checked through the subscription service using the internal service token.
+
+        Current update behavior applies only truthy values, so clients cannot use
+        this endpoint to clear `name`, clear `canvasData`, or set dimensions to `0`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SaveDesignRequest"
+            examples:
+              create:
+                value:
+                  name: Untitled design - YouTube Thumbnail
+                  canvasData: "{\"objects\":[]}"
+                  width: 900
+                  height: 500
+                  category: YouTube Thumbnail
+                  designId: null
+              update:
+                value:
+                  designId: "665000000000000000000001"
+                  name: Updated title
+                  canvasData: "{\"version\":\"6.6.2\",\"objects\":[]}"
+                  width: 900
+                  height: 500
+      responses:
+        "200":
+          description: Created or updated design
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DesignResponse"
+        "401":
+          $ref: "#/components/responses/GatewayUnauthorized"
+        "403":
+          description: Free design quota reached
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                freeLimit:
+                  value:
+                    success: false
+                    message: Free design limit reached. Upgrade to premium to create more designs.
+        "404":
+          description: Design not found or not owned by current user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/ServiceError"
+  /v1/designs/{id}:
+    get:
+      tags: [Designs]
+      operationId: getDesignById
+      summary: Get a design by ID
+      description: Fetches one design by MongoDB `_id`, scoped to the authenticated user.
+      parameters:
+        - $ref: "#/components/parameters/DesignId"
+      responses:
+        "200":
+          description: Design found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DesignResponse"
+        "401":
+          $ref: "#/components/responses/GatewayUnauthorized"
+        "404":
+          description: Design not found or not owned by current user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/ServiceError"
+    delete:
+      tags: [Designs]
+      operationId: deleteDesign
+      summary: Delete a design by ID
+      description: Validates the MongoDB object ID, checks ownership, then deletes the design.
+      parameters:
+        - $ref: "#/components/parameters/DesignId"
+      responses:
+        "200":
+          description: Design deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteDesignResponse"
+        "400":
+          description: Invalid design ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                invalidDesignId:
+                  value:
+                    success: false
+                    message: Invalid design ID
+        "401":
+          $ref: "#/components/responses/GatewayUnauthorized"
+        "404":
+          description: Design not found or not owned by current user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/ServiceError"
+  /v1/media/upload:
+    post:
+      tags: [Media]
+      operationId: uploadMedia
+      summary: Upload an image file
+      description: |
+        Uploads a single in-memory multipart field named `file`.
+
+        Accepted MIME types are PNG, JPEG, WebP, and GIF. Maximum file size is
+        10 MiB. The gateway sets `parseReqBody: false` for this route so Multer
+        in the upload service can parse the stream.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: PNG, JPEG, WebP, or GIF image up to 10 MiB.
+            encoding:
+              file:
+                contentType: image/png, image/jpeg, image/webp, image/gif
+      responses:
+        "201":
+          description: Media uploaded to Cloudinary and persisted in MongoDB
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MediaResponse"
+        "400":
+          description: Missing file, file too large, unexpected form field, or unsupported image type
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                noFile:
+                  value:
+                    success: false
+                    message: No file found
+                badType:
+                  value:
+                    success: false
+                    message: Unexpected field
+        "401":
+          $ref: "#/components/responses/GatewayUnauthorized"
+        "500":
+          $ref: "#/components/responses/ServiceError"
+  /v1/media/get:
+    get:
+      tags: [Media]
+      operationId: listMedia
+      summary: List current user's media
+      description: Finds media by authenticated `userId` and sorts by `createdAt` descending.
+      responses:
+        "200":
+          description: User media sorted by newest first
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MediaListResponse"
+        "401":
+          $ref: "#/components/responses/GatewayUnauthorized"
+        "500":
+          $ref: "#/components/responses/ServiceError"
+  /v1/media/ai-image-generate:
+    post:
+      tags: [Media]
+      operationId: generateAiImage
+      summary: Generate an AI image and save it as media
+      description: |
+        Sends a prompt to Stability AI, uploads the generated PNG to Cloudinary,
+        and saves a media record with `source: ai`.
+
+        `prompt` is required and trimmed. The default maximum prompt length is
+        `1000` characters, controlled by `AI_PROMPT_MAX_LENGTH`.
+
+        The service accepts Stability aspect ratios `1:1`, `16:9`, `21:9`,
+        `2:3`, `3:2`, `4:5`, `5:4`, `9:16`, and `9:21`. Unsupported or missing
+        values fall back to `1:1`.
+
+        AI generation is limited by an in-memory minimum interval per user,
+        an in-memory daily counter, a persisted daily media count for `source: ai`,
+        and a one-generation-at-a-time guard per user.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AiImageRequest"
+            examples:
+              square:
+                value:
+                  prompt: A bright YouTube thumbnail background
+                  aspectRatio: "1:1"
+              widescreen:
+                value:
+                  prompt: Clean abstract background with soft paper texture
+                  aspectRatio: "16:9"
+      responses:
+        "201":
+          description: Generated image uploaded to Cloudinary and persisted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiImageResponse"
+        "400":
+          description: Missing prompt or prompt longer than configured limit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/GatewayUnauthorized"
+        "429":
+          description: AI generation is rate limited or daily limit reached
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                inFlight:
+                  value:
+                    success: false
+                    message: An AI generation is already running for this user
+                dailyLimit:
+                  value:
+                    success: false
+                    message: Daily AI generation limit reached
+        "500":
+          $ref: "#/components/responses/ServiceError"
+  /v1/subscription:
+    get:
+      tags: [Subscription]
+      operationId: getSubscription
+      summary: Get current user's subscription state
+      description: |
+        Returns the current premium entitlement. If the user has no subscription
+        record, the service returns default non-premium values without saving a
+        new document.
+      responses:
+        "200":
+          description: Subscription state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubscriptionResponse"
+        "401":
+          $ref: "#/components/responses/GatewayUnauthorized"
+        "500":
+          $ref: "#/components/responses/ServiceError"
+  /v1/subscription/create-order:
+    post:
+      tags: [Subscription]
+      operationId: createPaypalOrder
+      summary: Create a PayPal checkout order
+      description: |
+        Creates a PayPal order for the configured premium price and stores a
+        `PaymentOrder` record owned by the authenticated user.
+
+        Defaults are `PREMIUM_PRICE=500`, `PREMIUM_CURRENCY=USD`, and
+        `FRONTEND_URL=http://localhost:3000` unless overridden by environment.
+      responses:
+        "200":
+          description: PayPal order created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateOrderResponse"
+        "401":
+          $ref: "#/components/responses/GatewayUnauthorized"
+        "500":
+          $ref: "#/components/responses/ServiceError"
+  /v1/subscription/capture-order:
+    post:
+      tags: [Subscription]
+      operationId: capturePaypalOrder
+      summary: Capture a PayPal checkout order
+      description: |
+        Captures a previously created PayPal order owned by the authenticated
+        user, verifies the capture status and amount, marks the user premium,
+        and records the PayPal capture ID.
+
+        Re-capturing an already captured order for the same user is idempotent
+        and returns the stored capture ID.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CaptureOrderRequest"
+            examples:
+              capture:
+                value:
+                  orderId: PAYPAL-ORDER-ID
+      responses:
+        "200":
+          description: Payment captured and user marked premium
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CaptureOrderResponse"
+        "400":
+          description: Missing order ID or PayPal capture verification failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                missingOrder:
+                  value:
+                    success: false
+                    message: Valid orderId is required
+                verificationFailed:
+                  value:
+                    success: false
+                    message: PayPal capture verification failed
+        "401":
+          $ref: "#/components/responses/GatewayUnauthorized"
+        "403":
+          description: PayPal order is not owned by this user or was already used
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/ServiceError"
+components:
+  securitySchemes:
+    GoogleIdToken:
+      type: http
+      scheme: bearer
+      bearerFormat: Google ID token
+      description: "Google ID token from the NextAuth session, sent as `Authorization: Bearer <token>`."
+  parameters:
+    DesignId:
+      name: id
+      in: path
+      required: true
+      description: MongoDB ObjectId for a design owned by the current user.
+      schema:
+        type: string
+        pattern: "^[a-fA-F0-9]{24}$"
+      example: "665000000000000000000001"
+  responses:
+    GatewayUnauthorized:
+      description: Missing or invalid Google ID token at the API gateway
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/GatewayAuthError"
+          examples:
+            missing:
+              value:
+                error: "Access denied! No Token provided"
+            invalid:
+              value:
+                error: "Invalid Token!"
+    ServiceError:
+      description: Gateway proxy error or downstream service error
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - $ref: "#/components/schemas/ErrorResponse"
+              - $ref: "#/components/schemas/GatewayProxyError"
+              - $ref: "#/components/schemas/InternalBoundaryError"
+  schemas:
+    HealthResponse:
+      type: object
+      required: [service, status]
+      properties:
+        service:
+          type: string
+          enum: [api-gateway, design-service, upload-service, subscription-service]
+        status:
+          type: string
+          enum: [ready, not-ready]
+    GatewayAuthError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          enum:
+            - "Access denied! No Token provided"
+            - "Invalid Token!"
+    InternalBoundaryError:
+      description: Returned by downstream services when called without the gateway's internal service token.
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          enum:
+            - "Service auth is not configured"
+            - "Forbidden service boundary"
+            - "Access denied! Please login to continue"
+    GatewayProxyError:
+      type: object
+      properties:
+        message:
+          type: string
+          example: Internal server error!
+        error:
+          type: string
+          example: connect ECONNREFUSED 127.0.0.1:5001
+    ErrorResponse:
+      type: object
+      required: [success, message]
+      properties:
+        success:
+          type: boolean
+          example: false
+        message:
+          type: string
+    Design:
+      type: object
+      properties:
+        _id:
+          type: string
+          example: "665000000000000000000001"
+        userId:
+          type: string
+          description: Google subject from the verified ID token.
+        name:
+          type: string
+          example: Untitled Design
+        canvasData:
+          type: string
+          nullable: true
+          description: Stringified Fabric.js canvas JSON.
+        width:
+          type: number
+          example: 900
+        height:
+          type: number
+          example: 500
+        category:
+          type: string
+          example: YouTube Thumbnail
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    SaveDesignRequest:
+      type: object
+      properties:
+        designId:
+          type: string
+          nullable: true
+          description: Present for update; null or omitted for create.
+        name:
+          type: string
+          default: Untitled Design
+        canvasData:
+          type: string
+          nullable: true
+          description: Stringified Fabric.js canvas JSON.
+        width:
+          type: number
+        height:
+          type: number
+        category:
+          type: string
+      additionalProperties: false
+    DesignResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: "#/components/schemas/Design"
+    DesignListResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Design"
+    DeleteDesignResponse:
+      type: object
+      required: [success, message]
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: Design deleted successfully
+    Media:
+      type: object
+      properties:
+        _id:
+          type: string
+          example: "665000000000000000000002"
+        userId:
+          type: string
+        name:
+          type: string
+          example: image.png
+        cloudinaryId:
+          type: string
+        url:
+          type: string
+          format: uri
+          example: https://res.cloudinary.com/demo/image/upload/sample.png
+        mimeType:
+          type: string
+          example: image/png
+        source:
+          type: string
+          enum: [upload, ai]
+          default: upload
+        size:
+          type: number
+          description: File size in bytes.
+        width:
+          type: number
+          nullable: true
+          description: AI media stores 1024; normal uploads may be undefined in current code.
+        height:
+          type: number
+          nullable: true
+          description: AI media stores 1024; normal uploads may be undefined in current code.
+        createdAt:
+          type: string
+          format: date-time
+    MediaResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: "#/components/schemas/Media"
+    MediaListResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Media"
+    AiImageRequest:
+      type: object
+      required: [prompt]
+      properties:
+        prompt:
+          type: string
+          minLength: 1
+          maxLength: 1000
+          example: A bright YouTube thumbnail background
+        aspectRatio:
+          type: string
+          enum: ["1:1", "16:9", "21:9", "2:3", "3:2", "4:5", "5:4", "9:16", "9:21"]
+          default: "1:1"
+      additionalProperties: false
+    AiImageResponse:
+      type: object
+      required: [success, data, prompt, aspectRatio, message]
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: "#/components/schemas/Media"
+        prompt:
+          type: string
+        aspectRatio:
+          type: string
+          example: "1:1"
+        message:
+          type: string
+          example: AI image generated and uploaded to DB successfully
+    SubscriptionState:
+      type: object
+      required: [isPremium]
+      properties:
+        isPremium:
+          type: boolean
+          example: false
+        premiumSince:
+          type: string
+          format: date-time
+          nullable: true
+    SubscriptionResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: "#/components/schemas/SubscriptionState"
+    CreateOrderResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+          required: [orderId, approvalLink]
+          properties:
+            orderId:
+              type: string
+              example: PAYPAL-ORDER-ID
+            approvalLink:
+              type: string
+              format: uri
+              example: https://www.sandbox.paypal.com/checkoutnow?token=PAYPAL-ORDER-ID
+    CaptureOrderRequest:
+      type: object
+      required: [orderId]
+      properties:
+        orderId:
+          type: string
+          minLength: 1
+          example: PAYPAL-ORDER-ID
+      additionalProperties: false
+    CaptureOrderResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+          required: [isPremium, paymentId]
+          properties:
+            isPremium:
+              type: boolean
+              example: true
+            paymentId:
+              type: string
+              example: PAYPAL-CAPTURE-ID
