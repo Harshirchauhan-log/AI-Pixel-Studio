@@ -1,0 +1,153 @@
+services:
+  - type: web
+    name: canva-clone-api-gateway
+    runtime: node
+    plan: free
+    region: oregon
+    rootDir: server/api-gateway
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeployTrigger: off
+    envVars:
+      - fromGroup: canva-clone-shared
+      - key: NODE_VERSION
+        value: 22
+      - key: NODE_ENV
+        value: production
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: DESIGN_HOST
+        fromService:
+          type: pserv
+          name: canva-clone-design-service
+          property: host
+      - key: DESIGN_PORT
+        fromService:
+          type: pserv
+          name: canva-clone-design-service
+          property: port
+      - key: UPLOAD_HOST
+        fromService:
+          type: pserv
+          name: canva-clone-upload-service
+          property: host
+      - key: UPLOAD_PORT
+        fromService:
+          type: pserv
+          name: canva-clone-upload-service
+          property: port
+      - key: SUBSCRIPTION_HOST
+        fromService:
+          type: pserv
+          name: canva-clone-subscription-service
+          property: host
+      - key: SUBSCRIPTION_PORT
+        fromService:
+          type: pserv
+          name: canva-clone-subscription-service
+          property: port
+
+  - type: pserv
+    name: canva-clone-design-service
+    runtime: node
+    plan: starter
+    region: oregon
+    rootDir: server/design-service
+    buildCommand: npm ci
+    startCommand: npm start
+    autoDeployTrigger: off
+    envVars:
+      - fromGroup: canva-clone-shared
+      - key: NODE_VERSION
+        value: 22
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 5001
+      - key: MONGO_URI
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: FREE_DESIGN_LIMIT
+        value: 5
+      - key: SUBSCRIPTION_HOST
+        fromService:
+          type: pserv
+          name: canva-clone-subscription-service
+          property: host
+      - key: SUBSCRIPTION_PORT
+        fromService:
+          type: pserv
+          name: canva-clone-subscription-service
+          property: port
+
+  - type: pserv
+    name: canva-clone-upload-service
+    runtime: node
+    plan: starter
+    region: oregon
+    rootDir: server/upload-service
+    buildCommand: npm ci
+    startCommand: npm start
+    autoDeployTrigger: off
+    envVars:
+      - fromGroup: canva-clone-shared
+      - key: NODE_VERSION
+        value: 22
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 5002
+      - key: MONGO_URI
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: cloud_name
+        sync: false
+      - key: api_key
+        sync: false
+      - key: api_secret
+        sync: false
+      - key: STABILITY_API_KEY
+        sync: false
+
+  - type: pserv
+    name: canva-clone-subscription-service
+    runtime: node
+    plan: starter
+    region: oregon
+    rootDir: server/subscription-service
+    buildCommand: npm ci
+    startCommand: npm start
+    autoDeployTrigger: off
+    envVars:
+      - fromGroup: canva-clone-shared
+      - key: NODE_VERSION
+        value: 22
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 5003
+      - key: MONGO_URI
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: PREMIUM_PRICE
+        value: 500
+      - key: PREMIUM_CURRENCY
+        value: USD
+
+envVarGroups:
+  - name: canva-clone-shared
+    envVars:
+      - key: INTERNAL_SERVICE_TOKEN
+        generateValue: true
